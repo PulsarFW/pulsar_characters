@@ -1,16 +1,32 @@
-local _noUpdate = { "Source", "User", "_id", "ID", "First", "Last", "Phone", "DOB", "Gender", "TempJob", "Ped",
-	"MDTHistory", "Parole", "Preview", "Team", "LSUNDGBan", "MDTSuspension", "Profiles", "TempJob", "License",
-	"Inventory" }
+local _noUpdate = { "Source", "User", "_id", "ID", "First", "Last", "Phone", "DOB", "Gender", "TempJob", "Ped", "MDTHistory", "Parole", "Preview", "Team", "LSUNDGBan", "MDTSuspension", "Profiles", "TempJob" }
 
 local _saving = {}
+local _tableReady = false
 
-local function tableContains(tbl, value)
-	for k, v in pairs(tbl) do
-		if v == value then
-			return true
+-- Real columns for anything actually queried across rows; rest stays in `data`.
+function EnsureCharactersTable(callback)
+	if _tableReady then
+		if callback then
+			callback()
 		end
+		return
 	end
-	return false
+	plsr.Database:Query(
+		"CREATE TABLE IF NOT EXISTS `characters` (`id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, `account` BIGINT UNSIGNED NOT NULL, `sid` BIGINT UNSIGNED NULL, `deleted` TINYINT(1) NOT NULL DEFAULT 0, `phone` VARCHAR(20) NULL, `crypto_wallet` VARCHAR(20) NULL, `data` JSON NOT NULL, INDEX `idx_account` (`account`), INDEX `idx_sid` (`sid`), INDEX `idx_deleted` (`deleted`), INDEX `idx_phone` (`phone`), INDEX `idx_crypto_wallet` (`crypto_wallet`))",
+		nil,
+		function()
+			plsr.Database:Query(
+				"ALTER TABLE `characters` ADD COLUMN IF NOT EXISTS `phone` VARCHAR(20) NULL, ADD COLUMN IF NOT EXISTS `crypto_wallet` VARCHAR(20) NULL, ADD INDEX IF NOT EXISTS `idx_phone` (`phone`), ADD INDEX IF NOT EXISTS `idx_crypto_wallet` (`crypto_wallet`)",
+				nil,
+				function()
+					_tableReady = true
+					if callback then
+						callback()
+					end
+				end
+			)
+		end
+	)
 end
 
 function StoreData(source)
@@ -18,10 +34,15 @@ function StoreData(source)
 		return
 	end
 	_saving[source] = true
-	local char = exports['pulsar-characters']:FetchCharacterSource(source)
+	local char = plsr.Fetch:CharacterSource(source)
 	if char ~= nil then
 		local data = char:GetData()
 		local cId = data.ID
+		local account = data.User
+		local sid = data.SID
+		local deleted = data.Deleted or false
+		local cryptoWallet = data.CryptoWallet
+
 		for k, v in ipairs(_noUpdate) do
 			data[v] = nil
 		end
@@ -44,68 +65,31 @@ function StoreData(source)
 
 		data.LastPlayed = os.time() * 1000
 
-		exports['pulsar-core']:LoggerTrace("Characters", string.format("Saving Character %s", cId), { console = true })
+		plsr.Logger:Info("Characters", string.format("Saving Character %s", cId), { console = true })
 
-		local dbData = exports['pulsar-core']:CloneDeep(data)
+		EnsureCharactersTable(function()
+			-- fetch+merge instead of overwrite, since `data` here is missing the _noUpdate fields
+			plsr.Database:Single("SELECT `data` FROM `characters` WHERE `id` = ?", { cId }, function(success, row)
+				local existing = {}
+				if success and row ~= nil then
+					local ok, decoded = pcall(json.decode, row.data)
+					if ok and type(decoded) == "table" then
+						existing = decoded
+					end
+				end
 
-		local jsonFields = {}
-		for _, f in ipairs(TablesToDecode) do jsonFields[f] = true end
-		for k, v in pairs(dbData) do
-			if type(v) == "table" or (type(v) == "string" and jsonFields[k]) then
-				dbData[k] = json.encode(v)
-			end
-		end
+				for k, v in pairs(data) do
+					existing[k] = v
+				end
 
-		local updateFields = {}
-		for k, v in pairs(dbData) do
-			if not tableContains(_noUpdate, k) then
-				table.insert(updateFields, string.format("`%s` = @%s", k, k))
-			end
-		end
-
-		local query = string.format([[
-			UPDATE `characters` SET %s WHERE `SID` = @ID
-		]], table.concat(updateFields, ", "))
-
-		dbData['@ID'] = cId
-
-		local saveCharacter = MySQL.update.await(query, dbData)
-		_saving[source] = false
-
-		exports['pulsar-core']:LoggerTrace("Characters",
-			string.format("Character %s has been saved to the Database successfully", cId),
-			{ console = true })
+				plsr.Database:Update(
+					"UPDATE `characters` SET `account` = ?, `sid` = ?, `deleted` = ?, `crypto_wallet` = ?, `data` = ? WHERE `id` = ?",
+					{ account, sid, deleted, cryptoWallet, json.encode(existing), cId },
+					function()
+						_saving[source] = false
+					end
+				)
+			end)
+		end)
 	end
 end
-
--- local _prevSaved = 0
--- CreateThread(function()
-
--- 	-- Wait(120000)
-
--- 	-- while true do
--- 	-- 	local v = Fetch:Next(_prevSaved)
--- 	-- 	exports['pulsar-core']:LoggerTrace(
--- 	-- 		"Characters",
--- 	-- 		string.format("BEFORE SAVE, _prevSaved: %s, v ~= nil: %s", _prevSaved, tostring(v ~= nil)),
--- 	-- 		{ console = true }
--- 	-- 	)
--- 	-- 	if v ~= nil then
--- 	-- 		local s = v:GetData("Source")
--- 	-- 		if v:GetData("Character") ~= nil then
--- 	-- 			StoreData(s)
--- 	-- 		end
--- 	-- 		_prevSaved = s
--- 	-- 	else
--- 	-- 		_prevSaved = 0
--- 	-- 	end
--- 	-- 	local c = exports['pulsar-characters']:FetchCountCharacters() or 1
--- 	-- 	exports['pulsar-core']:LoggerTrace(
--- 	-- 		"Characters",
--- 	-- 		string.format("AFTER SAVE, _prevSaved: %s, c: %s", _prevSaved, c),
--- 	-- 		{ console = true }
--- 	-- 	)
-
--- 	-- 	Wait(math.min(600000, (1200000 / math.max(1, c))))
--- 	-- end
--- end)

@@ -1,34 +1,72 @@
-local Config = require('shared.config')
+local config = load(LoadResourceFile(GetCurrentResourceName(), "config/server.lua"))()
+
 _tempLastLocation = {}
 _lastSpawnLocations = {}
 
-_SID = {}
-_ID = {}
+_pleaseFuckingWorkSID = {}
+_pleaseFuckingWorkID = {}
 
-_afkPlayers = {}
+_fuckingBozos = {}
+
+local _pedsTableReady = false
+local function ensurePedsTable(callback)
+	if _pedsTableReady then
+		if callback then
+			callback()
+		end
+		return
+	end
+	plsr.Database:Query(
+		"CREATE TABLE IF NOT EXISTS `peds` (`id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, `character_id` BIGINT UNSIGNED NOT NULL, `data` JSON NOT NULL, UNIQUE INDEX `idx_character` (`character_id`))",
+		nil,
+		function()
+			_pedsTableReady = true
+			if callback then
+				callback()
+			end
+		end
+	)
+end
+
+local _changelogsTableReady = false
+local function ensureChangelogsTable(callback)
+	if _changelogsTableReady then
+		if callback then
+			callback()
+		end
+		return
+	end
+	plsr.Database:Query(
+		"CREATE TABLE IF NOT EXISTS `changelogs` (`id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, `date` BIGINT NOT NULL, `data` JSON NOT NULL, INDEX `idx_date` (`date`))",
+		nil,
+		function()
+			_changelogsTableReady = true
+			if callback then
+				callback()
+			end
+		end
+	)
+end
 
 AddEventHandler("Player:Server:Connected", function(source)
-	_afkPlayers[source] = os.time()
+	_fuckingBozos[source] = os.time()
 end)
 
 function RegisterCallbacks()
 	CreateThread(function()
 		while true do
 			if not (GlobalState["DisableAFK"] or false) then
-				for k, v in pairs(_afkPlayers) do
-					if v < (os.time() - (60 * 10)) then
-						local pState = Player(k).state
-						if not pState.isDev and not pState.isAdmin and not pState.isStaff then
-							exports['pulsar-core']:PunishmentKick(k, "You Were Kicked For Being AFK On Character Select",
-								"Pwnzor", true)
+				for k, v in pairs(_fuckingBozos) do
+					if v < (os.time() - (60 * config.AfkKick.kickMinutes)) then
+						if not plsr.State:Player(k).isDev and not plsr.State:Player(k).isAdmin and not plsr.State:Player(k).isStaff then
+							plsr.Punishment:Kick(k, "You Were Kicked For Being AFK On Character Select", "Pwnzor", true)
 						else
-							exports['pulsar-core']:LoggerWarn("Characters",
-								"Staff or Admin Was AFK, Removing From Checks")
-							_afkPlayers[k] = nil
+							plsr.Logger:Warn("Characters", "Staff or Admin Was AFK, Removing From Checks")
+							_fuckingBozos[k] = nil
 						end
-					elseif v < (os.time() - (60 * 5)) then
+					elseif v < (os.time() - (60 * config.AfkKick.warningMinutes)) then
 						-- TODO: Implement better alert when at this stage when we have someway to do it
-						exports['pulsar-hud']:Notification("warning", k, "You Will Be Kicked Soon For Being AFK", 58000)
+						plsr.Execute:Client(k, "Notification", "Warn", "You Will Be Kicked Soon For Being AFK", config.AfkKick.warningNotifyDurationMs)
 					end
 				end
 			end
@@ -36,384 +74,414 @@ function RegisterCallbacks()
 		end
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:GetServerData", function(source, data, cb)
-		while exports['pulsar-core']:FetchSource(source) == nil do
+	plsr.Callbacks:RegisterServerCallback("Characters:GetServerData", function(source, data, cb)
+		while plsr.Fetch:Source(source) == nil do
 			Wait(1000)
 		end
 
 		local motd = GetConvar("motd", "Welcome to Pulsar Framework")
-		local query = 'SELECT * FROM `changelogs` ORDER BY `date` DESC LIMIT 1'
+		ensureChangelogsTable(function()
+			plsr.Database:Query("SELECT `date`, `data` FROM `changelogs` ORDER BY `date` DESC LIMIT 1", nil, function(success, results)
+				if not success then
+					cb({ changelog = nil, motd = "" })
+					return
+				end
 
-		MySQL.Async.fetchAll(query, {}, function(results)
-			if not results then
-				cb({ changelog = nil, motd = "" })
-				return
-			end
-
-			if #results > 0 then
-				cb({ changelog = results[1], motd = motd })
-			else
-				cb({ changelog = nil, motd = motd })
-			end
+				if results and #results > 0 then
+					local ok, changelog = pcall(json.decode, results[1].data)
+					if ok and type(changelog) == "table" then
+						changelog.date = results[1].date
+					else
+						changelog = nil
+					end
+					cb({ changelog = changelog, motd = motd })
+				else
+					cb({ changelog = nil, motd = motd })
+				end
+			end)
 		end)
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:GetCharacters", function(source, data, cb)
-		local player = exports['pulsar-core']:FetchSource(source)
-		local license = exports['pulsar-core']:GetPlayerLicense(source)
-		local myCharacters = MySQL.query.await('SELECT * FROM `characters` WHERE `License` = @License AND `Deleted` = 0',
-			{
-				["@License"] = license,
-			})
-		if #myCharacters == 0 then
-			return cb({})
-		end
+	plsr.Callbacks:RegisterServerCallback("Characters:GetCharacters", function(source, data, cb)
+		local player = plsr.Fetch:Source(source)
+		EnsureCharactersTable(function()
+			plsr.Database:Query(
+				"SELECT `id`, `data` FROM `characters` WHERE `account` = ? AND `deleted` = 0",
+				{ player:GetData("AccountID") },
+				function(success, results)
+					if not success then
+						cb(nil)
+						return
+					end
 
-		local cData = {}
-		for k, v in ipairs(myCharacters) do
-			local pedData = MySQL.single.await(
-				[[
-			  SELECT * FROM `peds` WHERE `Char` = @Char
-			]],
-				{
-					["@Char"] = v.SID,
-				}
+					local decodedById = {}
+					local charsToFetch = {}
+					for k, row in ipairs(results) do
+						local ok, decoded = pcall(json.decode, row.data)
+						if ok and type(decoded) == "table" then
+							decodedById[row.id] = decoded
+							table.insert(charsToFetch, row.id)
+						end
+					end
+
+					local p = promise.new()
+					if #charsToFetch == 0 then
+						p:resolve({})
+					else
+						ensurePedsTable(function()
+							local placeholders = {}
+							for i = 1, #charsToFetch do
+								table.insert(placeholders, "?")
+							end
+							plsr.Database:Query(
+								"SELECT `character_id`, `data` FROM `peds` WHERE `character_id` IN (" .. table.concat(placeholders, ", ") .. ")",
+								charsToFetch,
+								function(s2, pedRows)
+									p:resolve((s2 and pedRows) or {})
+								end
+							)
+						end)
+					end
+
+					local pedRows = Citizen.Await(p)
+					local previews = {}
+					for k, row in ipairs(pedRows) do
+						local ok, decoded = pcall(json.decode, row.data)
+						if ok then
+							previews[row.character_id] = decoded
+						end
+					end
+
+					local cData = {}
+					for k, charId in ipairs(charsToFetch) do
+						local v = decodedById[charId]
+						table.insert(cData, {
+							ID = charId,
+							First = v.First,
+							Last = v.Last,
+							Phone = v.Phone,
+							DOB = v.DOB,
+							Gender = v.Gender,
+							LastPlayed = v.LastPlayed,
+							Jobs = v.Jobs,
+							SID = v.SID,
+							GangChain = v.GangChain,
+							Preview = previews[charId] or false,
+						})
+					end
+
+					local charLimit = config.CharacterLimits.default
+					if player.Permissions:IsStaff() then
+						charLimit = config.CharacterLimits.staff
+					end
+
+					cb(cData, charLimit)
+				end
 			)
-			table.insert(cData, {
-				License = v.License,
-				ID = v.SID,
-				First = v.First,
-				Last = v.Last,
-				Phone = v.Phone,
-				DOB = v.DOB,
-				Gender = v.Gender,
-				LastPlayed = v.LastPlayed,
-				Jobs = json.decode(v.Jobs),
-				SID = v.SID,
-				GangChain = json.decode(v.GangChain),
-				Preview = pedData and json.decode(pedData.ped) or false
-			})
-		end
-
-		player:SetData("Characters", cData)
-		cb(cData)
-	end)
-
-	exports["pulsar-core"]:RegisterServerCallback("Characters:CreateCharacter", function(source, data, cb)
-		local player = exports['pulsar-core']:FetchSource(source)
-
-		local pNumber = exports['pulsar-phone']:GeneratePhoneNumber()
-		local playerIdentifiers = GetPlayerIdentifiers(source)
-		local prioritizedIdentifier = nil -- If Steam ID is available, save that as character license because it's short and simple
-
-		for _, id in ipairs(playerIdentifiers) do
-			if string.sub(id, 1, string.len("steam:")) == "steam:" then
-				prioritizedIdentifier = id
-				break
-			end
-		end
-
-		if not prioritizedIdentifier then
-			for _, id in ipairs(playerIdentifiers) do
-				if string.sub(id, 1, string.len("license:")) == "license:" then
-					prioritizedIdentifier = id
-					break
-				end
-			end
-		end
-
-		if not prioritizedIdentifier then
-			prioritizedIdentifier = player:GetData("Identifier")
-		end
-
-		local doc = {
-			License = prioritizedIdentifier,
-			User = player:GetData("AccountID"),
-			First = data.first,
-			Last = data.last,
-			Phone = pNumber,
-			Gender = tonumber(data.gender),
-			Bio = data.bio,
-			Origin = data.origin,
-			DOB = string.match(data.dob, "(%d%d%d%d%-%d%d%-%d%d)"),
-			LastPlayed = -1,
-			Jobs = {},
-			SID = exports['pulsar-core']:SequenceGet("Character"),
-			Cash = 1000,
-			New = true,
-			Licenses = {
-				Drivers = {
-					Active = true,
-					Points = 0,
-					Suspended = false,
-				},
-				Weapons = {
-					Active = false,
-					Suspended = false,
-				},
-				Hunting = {
-					Active = false,
-					Suspended = false,
-				},
-				Fishing = {
-					Active = false,
-					Suspended = false,
-				},
-				Pilot = {
-					Active = false,
-					Suspended = false,
-				},
-				Drift = {
-					Active = false,
-					Suspended = false,
-				},
-			},
-		}
-
-		local extra = exports['pulsar-core']:MiddlewareTriggerEventWithData("Characters:Creating", source, doc) or {}
-		for k, v in ipairs(extra) do
-			for k2, v2 in pairs(v) do
-				if k2 ~= "ID" then
-					doc[k2] = v2
-				end
-			end
-		end
-
-		local dbData = exports['pulsar-core']:CloneDeep(doc)
-		local jsonFields = {}
-		for _, f in ipairs(TablesToDecode) do jsonFields[f] = true end
-		for k, v in pairs(dbData) do
-			if type(v) == 'table' or (type(v) == 'string' and jsonFields[k]) then
-				dbData[k] = json.encode(v)
-			end
-		end
-
-		local insertedCharacter = MySQL.insert.await('INSERT INTO `characters` SET ?', { dbData })
-		if insertedCharacter <= 0 then
-			return cb(nil)
-		end
-
-		doc.ID = insertedCharacter
-
-		TriggerEvent("Characters:Server:CharacterCreated", doc)
-		local success, result = pcall(function()
-			exports['pulsar-core']:MiddlewareTriggerEvent("Characters:Created", source, doc)
 		end)
-
-		if not success then
-			exports['pulsar-core']:LoggerError(
-				"Characters",
-				string.format("Error in Characters:Created middleware: %s", result)
-			)
-		end
-
-		exports['pulsar-core']:LoggerInfo(
-			"Characters",
-			string.format(
-				"%s [%s] Created a New Character %s %s (%s)",
-				player:GetData("Name"),
-				player:GetData("AccountID"),
-				doc.First,
-				doc.Last,
-				doc.SID
-			),
-			{
-				console = true,
-				file = true,
-				database = true,
-			}
-		)
-		return cb(doc)
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:DeleteCharacter", function(source, data, cb)
-		local player = exports['pulsar-core']:FetchSource(source)
-		local license = exports['pulsar-core']:GetPlayerLicense(source)
-		local myCharacter = MySQL.single.await(
-			[[
-			SELECT * FROM `characters` WHERE `License` = @License AND `SID` = @ID
-		  ]],
-			{
-				["@License"] = license,
-				["@ID"] = data,
-			}
-		)
+	plsr.Callbacks:RegisterServerCallback("Characters:CreateCharacter", function(source, data, cb)
+		local player = plsr.Fetch:Source(source)
 
-		if myCharacter == nil then
-			return cb(nil)
-		end
+		EnsureCharactersTable(function()
+			local p = promise.new()
+			plsr.Database:Scalar(
+				"SELECT COUNT(*) FROM `characters` WHERE `account` = ? AND `deleted` = 0",
+				{ player:GetData("AccountID") },
+				function(success, count)
+					p:resolve((success and count) or config.CharacterLimits.default)
+				end
+			)
 
-		local deletingChar = exports['pulsar-core']:CloneDeep(myCharacter)
-		local deletedCharacter = MySQL.update.await(
-			[[
-			UPDATE `characters` SET `Deleted` = 1 WHERE `License` = @License AND `SID` = @ID
-		  ]],
-			{
-				["@License"] = license,
-				["@ID"] = data,
-			}
-		)
+			local charCount = Citizen.Await(p)
 
-		if deletedCharacter then
-			MySQL.query.await("DELETE FROM `peds` WHERE `char` = ?", { data })
+			if charCount < config.CharacterLimits.default or player.Permissions:IsStaff() then
+				local pNumber = plsr.Phone:GeneratePhoneNumber()
 
-			TriggerEvent("Characters:Server:CharacterDeleted", data)
-			cb(true)
-
-			exports['pulsar-core']:LoggerWarn(
-				"Characters",
-				string.format(
-					"%s [%s] Deleted Character %s %s (%s)",
-					player:GetData("Name"),
-					player:GetData("AccountID"),
-					deletingChar.First,
-					deletingChar.Last,
-					deletingChar.SID
-				),
-				{
-					console = true,
-					file = true,
-					database = true,
-					discord = {
-						embed = true,
+				local doc = {
+					User = player:GetData("AccountID"),
+					First = data.first,
+					Last = data.last,
+					Phone = pNumber,
+					Gender = tonumber(data.gender),
+					Bio = data.bio,
+					Origin = data.origin,
+					DOB = data.dob,
+					LastPlayed = -1,
+					Jobs = {},
+					SID = plsr.Sequence:Get("Character"),
+					Cash = config.NewCharacter.startingCash,
+					New = true,
+					Licenses = {
+						Drivers = {
+							Active = config.NewCharacter.startsWithDriversLicense,
+							Points = 0,
+							Suspended = false,
+						},
+						Weapons = {
+							Active = false,
+							Suspended = false,
+						},
+						Hunting = {
+							Active = false,
+							Suspended = false,
+						},
+						Fishing = {
+							Active = false,
+							Suspended = false,
+						},
+						Pilot = {
+							Active = false,
+							Suspended = false,
+						},
+						Drift = {
+							Active = false,
+							Suspended = false,
+						},
 					},
 				}
+
+				local extra = plsr.Middleware:TriggerEventWithData("Characters:Creating", source, doc)
+				for k, v in ipairs(extra) do
+					for k2, v2 in pairs(v) do
+						if k2 ~= "ID" then
+							doc[k2] = v2
+						end
+					end
+				end
+
+				plsr.Database:Insert(
+					"INSERT INTO `characters` (`account`, `sid`, `deleted`, `phone`, `data`) VALUES (?, ?, 0, ?, ?)",
+					{ doc.User, doc.SID, doc.Phone, json.encode(doc) },
+					function(success, newId)
+						if not success then
+							cb(nil)
+							return
+						end
+						doc.ID = newId
+						TriggerEvent("Characters:Server:CharacterCreated", doc)
+						plsr.Middleware:TriggerEvent("Characters:Created", source, doc)
+						cb(doc)
+
+						plsr.Logger:Info(
+							"Characters",
+							string.format(
+								"%s [%s] Created a New Character %s %s (%s)",
+								player:GetData("Name"),
+								player:GetData("AccountID"),
+								doc.First,
+								doc.Last,
+								doc.SID
+							),
+							{
+								console = true,
+								file = true,
+								database = true,
+							}
+						)
+					end
+				)
+			else
+				cb(nil)
+			end
+		end)
+	end)
+
+	plsr.Callbacks:RegisterServerCallback("Characters:DeleteCharacter", function(source, data, cb)
+		local player = plsr.Fetch:Source(source)
+		EnsureCharactersTable(function()
+			plsr.Database:Single(
+				"SELECT `id`, `data` FROM `characters` WHERE `account` = ? AND `id` = ?",
+				{ player:GetData("AccountID"), data },
+				function(success, row)
+					if not success or row == nil then
+						cb(nil)
+						return
+					end
+
+					local ok, deletingChar = pcall(json.decode, row.data)
+					if not ok then
+						cb(nil)
+						return
+					end
+
+					plsr.Database:Update(
+						"UPDATE `characters` SET `deleted` = 1, `data` = JSON_SET(`data`, '$.Deleted', true) WHERE `account` = ? AND `id` = ?",
+						{ player:GetData("AccountID"), data },
+						function(updateSuccess)
+							TriggerEvent("Characters:Server:CharacterDeleted", data, deletingChar.SID)
+							cb(updateSuccess)
+
+							if updateSuccess then
+								plsr.Logger:Warn(
+									"Characters",
+									string.format(
+										"%s [%s] Deleted Character %s %s (%s)",
+										player:GetData("Name"),
+										player:GetData("AccountID"),
+										deletingChar.First,
+										deletingChar.Last,
+										deletingChar.SID
+									),
+									{
+										console = true,
+										file = true,
+										database = true,
+										discord = {
+											embed = true,
+										},
+									}
+								)
+							end
+						end
+					)
+				end
 			)
-		else
-			cb(false)
-		end
+		end)
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:GetSpawnPoints", function(source, data, cb)
-		local player = exports['pulsar-core']:FetchSource(source)
-		local license = exports['pulsar-core']:GetPlayerLicense(source)
-		local myCharacter = MySQL.single.await(
-			[[
-			SELECT * FROM `characters` WHERE `License` = @License AND `SID` = @ID
-		  ]],
-			{
-				["@License"] = license,
-				["@ID"] = data,
-			}
-		)
-		if myCharacter == nil then
-			return cb(nil)
-		end
-		myCharacter.Jobs = json.decode(myCharacter.Jobs)
-		if myCharacter.New then
-			return cb({
-				{
-					id = 1,
-					label = "Character Creation",
-					location = exports['pulsar-apartments']:GetInteriorLocation(myCharacter.Apartment or 1),
-				},
-			})
-		elseif myCharacter.Jailed then
-			local JailedData = json.decode(myCharacter.JailedData)
-			-- and not myCharacter.Jailed.Released ~= nil
-			if not JailedData.Released then
-				return cb({ Config.PrisonSpawn })
-			end
-		elseif myCharacter.ICU then
-			local ICUData = json.decode(myCharacter.ICU)
-			if not ICUData.Released then
-				return cb({ Config.ICUSpawn })
-			end
-		end
+	plsr.Callbacks:RegisterServerCallback("Characters:GetSpawnPoints", function(source, data, cb)
+		local player = plsr.Fetch:Source(source)
+		EnsureCharactersTable(function()
+			plsr.Database:Single(
+				"SELECT `data` FROM `characters` WHERE `account` = ? AND `id` = ? AND `deleted` = 0",
+				{ player:GetData("AccountID"), data },
+				function(success, row)
+					if not success or row == nil then
+						cb(nil)
+						return
+					end
 
-		local spawns = exports['pulsar-core']:MiddlewareTriggerEventWithData("Characters:GetSpawnPoints", source, data,
-			myCharacter)
-		cb(spawns)
+					local ok, char = pcall(json.decode, row.data)
+					if not ok or type(char) ~= "table" then
+						cb(nil)
+						return
+					end
+
+					local hasLastLocation = _lastSpawnLocations[char.ID]
+
+					if char.New then
+						cb({
+							{
+								id = 1,
+								label = "Character Creation",
+								location = plsr.Apartment:GetInteriorLocation(char.Apartment or 1),
+							},
+						})
+					elseif char.Jailed and not char.Jailed.Released ~= nil then
+						cb({ config.Spawns.prison })
+					elseif char.ICU and not char.ICU.Released then
+						cb({ config.Spawns.icu })
+					elseif hasLastLocation and plsr.Damage:WasDead(char.SID) then
+						cb({
+							{
+								id = "LastLocation",
+								label = "Last Location",
+								location = {
+									x = hasLastLocation.coords.x,
+									y = hasLastLocation.coords.y,
+									z = hasLastLocation.coords.z,
+									h = 0.0,
+								},
+								icon = "location-dot",
+								event = "Characters:GlobalSpawn",
+							},
+						})
+					else
+						local spawns = plsr.Middleware:TriggerEventWithData("Characters:GetSpawnPoints", source, data, char)
+						cb(spawns or {})
+					end
+				end
+			)
+		end)
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:GetCharacterData", function(source, data, cb)
-		local player = exports['pulsar-core']:FetchSource(source)
-		local license = exports['pulsar-core']:GetPlayerLicense(source)
-		local myCharacter = MySQL.single.await([[
-			SELECT * FROM `characters` WHERE `License` = @License AND `SID` = @ID
-			]],
-			{
-				["@License"] = license,
-				["@ID"] = data,
-			}
-		)
+	plsr.Callbacks:RegisterServerCallback("Characters:GetCharacterData", function(source, data, cb)
+		local player = plsr.Fetch:Source(source)
+		EnsureCharactersTable(function()
+			plsr.Database:Single(
+				"SELECT `id`, `data` FROM `characters` WHERE `account` = ? AND `id` = ?",
+				{ player:GetData("AccountID"), data },
+				function(success, row)
+					if not success or row == nil then
+						cb(nil)
+						return
+					end
 
-		if myCharacter == nil then
-			return cb(nil)
-		end
+					local ok, cData = pcall(json.decode, row.data)
+					if not ok or type(cData) ~= "table" then
+						cb(nil)
+						return
+					end
 
-		local cData = myCharacter
+					cData.Source = source
+					cData.ID = row.id
 
-		for k, v in ipairs(TablesToDecode) do
-			if cData[v] then
-				cData[v] = json.decode(cData[v])
-			end
-		end
+					player:SetData("Character", {
+						SID = cData.SID,
+						First = cData.First,
+						Last = cData.Last,
+					})
 
-		cData.Source = source
-		cData.ID = myCharacter.SID
+					local store = plsr.DataStore:CreateStore(source, "Character", cData)
+					ONLINE_CHARACTERS[source] = store
 
-		player:SetData("Character", {
-			SID = cData.SID,
-			First = cData.First,
-			Last = cData.Last,
-		})
+					_pleaseFuckingWorkSID[cData.SID] = source
+					_pleaseFuckingWorkID[cData.ID] = source
 
-		local store = exports['pulsar-core']:CreateStore(source, "Character", cData)
-		ONLINE_CHARACTERS[source] = store
+					GlobalState[string.format("SID:%s", source)] = cData.SID
 
-		_SID[cData.SID] = source
-		_ID[cData.ID] = source
+					plsr.Middleware:TriggerEvent("Characters:CharacterSelected", source)
 
-		GlobalState[string.format("SID:%s", source)] = cData.SID
-
-		exports['pulsar-core']:MiddlewareTriggerEvent("Characters:CharacterSelected", source)
-
-		cb(cData)
+					cb(cData)
+				end
+			)
+		end)
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:Logout", function(source, data, cb)
-		_afkPlayers[source] = os.time()
-		local c = exports['pulsar-characters']:FetchCharacterSource(source)
+	plsr.Callbacks:RegisterServerCallback("Characters:Logout", function(source, data, cb)
+		_fuckingBozos[source] = os.time()
+		local c = plsr.Fetch:CharacterSource(source)
 		if c ~= nil then
 			local cData = c:GetData()
 			if cData.SID and cData.ID then
-				_SID[cData.SID] = nil
-				_ID[cData.ID] = nil
+				_pleaseFuckingWorkSID[cData.SID] = nil
+				_pleaseFuckingWorkID[cData.ID] = nil
 			end
 
 			TriggerEvent("Characters:Server:PlayerLoggedOut", source, cData)
 
-			exports['pulsar-core']:MiddlewareTriggerEvent("Characters:Logout", source)
+			plsr.Middleware:TriggerEvent("Characters:Logout", source)
 			ONLINE_CHARACTERS[source] = nil
 			GlobalState[string.format("SID:%s", source)] = nil
 			TriggerClientEvent("Characters:Client:Logout", source)
-			exports["pulsar-core"]:RoutePlayerToHiddenRoute(source)
-			exports["pulsar-core"]:DeleteStore(source, "Character")
+			plsr.Routing:RoutePlayerToHiddenRoute(source)
+			plsr.DataStore:DeleteStore(source, "Character")
 		end
 		cb("ok")
 	end)
 
-	exports["pulsar-core"]:RegisterServerCallback("Characters:GlobalSpawn", function(source, data, cb)
-		exports["pulsar-core"]:RoutePlayerToGlobalRoute(source)
+	plsr.Callbacks:RegisterServerCallback("Characters:GlobalSpawn", function(source, data, cb)
+		plsr.Routing:RoutePlayerToGlobalRoute(source)
 		cb()
 	end)
 end
 
 AddEventHandler("Characters:Server:DropCleanup", function(source, cData)
-	_afkPlayers[source] = nil
+	_fuckingBozos[source] = nil
 	ONLINE_CHARACTERS[source] = nil
 
 	GlobalState[string.format("SID:%s", source)] = nil
 
 	if cData and cData.SID and cData.ID then
-		_SID[cData.SID] = nil
-		_ID[cData.ID] = nil
+		_pleaseFuckingWorkSID[cData.SID] = nil
+		_pleaseFuckingWorkID[cData.ID] = nil
 	end
 end)
 
 function HandleLastLocation(source)
-	local char = exports['pulsar-characters']:FetchCharacterSource(source)
+	local char = plsr.Fetch:CharacterSource(source)
 
 	if char ~= nil then
 		local lastLocation = _tempLastLocation[source]
@@ -439,27 +507,27 @@ AddEventHandler("Characters:Server:PlayerLoggedOut", function(source, cData)
 end)
 
 function RegisterMiddleware()
-	exports['pulsar-core']:MiddlewareAdd("Characters:Spawning", function(source)
-		_afkPlayers[source] = nil
+	plsr.Middleware:Add("Characters:Spawning", function(source)
+		_fuckingBozos[source] = nil
 		TriggerClientEvent("Characters:Client:Spawned", source)
 	end, 100000)
-	exports['pulsar-core']:MiddlewareAdd("Characters:ForceStore", function(source)
-		local char = exports['pulsar-characters']:FetchCharacterSource(source)
+	plsr.Middleware:Add("Characters:ForceStore", function(source)
+		local char = plsr.Fetch:CharacterSource(source)
 		if char ~= nil then
 			StoreData(source)
 		end
 	end, 100000)
-	exports['pulsar-core']:MiddlewareAdd("Characters:Logout", function(source)
-		local char = exports['pulsar-characters']:FetchCharacterSource(source)
+	plsr.Middleware:Add("Characters:Logout", function(source)
+		local char = plsr.Fetch:CharacterSource(source)
 		if char ~= nil then
 			StoreData(source)
 		end
 	end, 10000)
 
-	exports['pulsar-core']:MiddlewareAdd("Characters:GetSpawnPoints", function(source, id)
+	plsr.Middleware:Add("Characters:GetSpawnPoints", function(source, id)
 		if id then
 			local hasLastLocation = _lastSpawnLocations[id]
-			if hasLastLocation and hasLastLocation.time and (os.time() - hasLastLocation.time) <= (60 * 5) then
+			if hasLastLocation and hasLastLocation.time and (os.time() - hasLastLocation.time) <= (60 * config.LastLocationValidityMinutes) then
 				return {
 					{
 						id = "LastLocation",
@@ -479,7 +547,7 @@ function RegisterMiddleware()
 		return {}
 	end, 1)
 
-	exports['pulsar-core']:MiddlewareAdd("Characters:GetSpawnPoints", function(source)
+	plsr.Middleware:Add("Characters:GetSpawnPoints", function(source)
 		local spawns = {}
 		for k, v in ipairs(Spawns) do
 			v.event = "Characters:GlobalSpawn"
@@ -488,32 +556,32 @@ function RegisterMiddleware()
 		return spawns
 	end, 5)
 
-	exports['pulsar-core']:MiddlewareAdd("playerDropped", function(source, message)
-		local char = exports['pulsar-characters']:FetchCharacterSource(source)
+	plsr.Middleware:Add("playerDropped", function(source, message)
+		local char = plsr.Fetch:CharacterSource(source)
 		if char ~= nil then
 			StoreData(source)
 		end
 	end, 10000)
 
-	exports['pulsar-core']:MiddlewareAdd("Characters:Logout", function(source)
-		local pState = Player(source).state
-		if pState.tpLocation then
-			_tempLastLocation[source] = pState.tpLocation
+	plsr.Middleware:Add("Characters:Logout", function(source)
+		local tpLocation = plsr.State:Player(source).tpLocation
+		if tpLocation then
+			_tempLastLocation[source] = tpLocation
 		else
 			_tempLastLocation[source] = GetEntityCoords(GetPlayerPed(source))
 		end
 		HandleLastLocation(source)
 	end, 1)
 
-	exports['pulsar-core']:MiddlewareAdd("playerDropped", HandleLastLocation, 6)
+	plsr.Middleware:Add("playerDropped", HandleLastLocation, 6)
 end
 
 AddEventHandler("playerDropped", function()
 	local src = source
 	if DoesEntityExist(GetPlayerPed(src)) then
-		local pState = Player(src).state
-		if pState.tpLocation then
-			_tempLastLocation[src] = pState.tpLocation
+		local tpLocation = plsr.State:Player(src).tpLocation
+		if tpLocation then
+			_tempLastLocation[src] = tpLocation
 		else
 			_tempLastLocation[src] = GetEntityCoords(GetPlayerPed(src))
 		end

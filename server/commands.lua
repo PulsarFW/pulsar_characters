@@ -1,13 +1,13 @@
 function RegisterCommands()
-	exports["pulsar-chat"]:RegisterStaffCommand("logout", function(source, args, rawCommand)
-		TriggerClientEvent("Characters:Client:Logout:Event", source)
+	plsr.Chat:RegisterStaffCommand("logout", function(source, args, rawCommand)
+		plsr.Execute:Client(source, "Characters", "Logout")
 	end, {
 		help = "Logout",
 	}, 0)
-	exports["pulsar-chat"]:RegisterStaffCommand("logoutsid", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterStaffCommand("logoutsid", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		if char ~= nil then
-			TriggerClientEvent("Characters:Client:Logout:Event", char:GetData("Source"))
+			plsr.Execute:Client(char:GetData("Source"), "Characters", "Logout")
 		end
 	end, {
 		help = "Force logs out another player by State ID",
@@ -18,8 +18,8 @@ function RegisterCommands()
 			},
 		},
 	}, 1)
-	exports["pulsar-chat"]:RegisterStaffCommand("logoutsource", function(source, args, rawCommand)
-		TriggerClientEvent("Characters:Client:Logout:Event", tonumber(args[1]))
+	plsr.Chat:RegisterStaffCommand("logoutsource", function(source, args, rawCommand)
+		plsr.Execute:Client(tonumber(args[1]), "Characters", "Logout")
 	end, {
 		help = "Force logs out another player by Source",
 		params = {
@@ -29,24 +29,24 @@ function RegisterCommands()
 			},
 		},
 	}, 1)
-	exports["pulsar-chat"]:RegisterAdminCommand("logoutall", function(source, args, rawCommand)
-		for k, v in pairs(exports['pulsar-core']:FetchAll()) do
-			TriggerClientEvent("Characters:Client:Logout:Event", v:GetData("Source"))
+	plsr.Chat:RegisterAdminCommand("logoutall", function(source, args, rawCommand)
+		for k, v in pairs(plsr.Fetch:All()) do
+			plsr.Execute:Client(v:GetData("Source"), "Characters", "Logout")
 		end
 	end, {
 		help = "Force logs out all players",
 	}, 0)
 
-	exports["pulsar-chat"]:RegisterAdminCommand("addrep", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterAdminCommand("addrep", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		if char ~= nil then
-			exports['pulsar-characters']:RepAdd(char:GetData("Source"), args[2], tonumber(args[3]))
-			exports["pulsar-chat"]:SendSystemSingle(
+			plsr.Reputation.Modify:Add(char:GetData("Source"), args[2], tonumber(args[3]))
+			plsr.Chat.Send.System:Single(
 				source,
 				string.format("%s Rep Added For %s To State ID %s", args[3], args[2], args[1])
 			)
 		else
-			exports["pulsar-chat"]:SendSystemSingle(source, "Invalid Target")
+			plsr.Chat.Send.System:Single(source, "Invalid Target")
 		end
 	end, {
 		help = "Add Specified Reputation To Specified Player",
@@ -66,16 +66,16 @@ function RegisterCommands()
 		},
 	}, 3)
 
-	exports["pulsar-chat"]:RegisterAdminCommand("remrep", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterAdminCommand("remrep", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		if char ~= nil then
-			exports['pulsar-characters']:RepRemove(char:GetData("Source"), args[2], tonumber(args[3]))
-			exports["pulsar-chat"]:SendSystemSingle(
+			plsr.Reputation.Modify:Remove(char:GetData("Source"), args[2], tonumber(args[3]))
+			plsr.Chat.Send.System:Single(
 				source,
 				string.format("%s Rep Removed For %s From State ID %s", args[3], args[2], args[1])
 			)
 		else
-			exports["pulsar-chat"]:SendSystemSingle(source, "Invalid Target")
+			plsr.Chat.Send.System:Single(source, "Invalid Target")
 		end
 	end, {
 		help = "Remove Specified Reputation To Specified Player",
@@ -95,16 +95,16 @@ function RegisterCommands()
 		},
 	}, 3)
 
-	exports["pulsar-chat"]:RegisterAdminCommand("getrep", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterAdminCommand("getrep", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		if char ~= nil then
-			local repLevel = exports['pulsar-characters']:RepGetLevel(char:GetData("Source"), args[2])
-			exports["pulsar-chat"]:SendSystemSingle(
+			local repLevel = plsr.Reputation:GetLevel(char:GetData("Source"), args[2])
+			plsr.Chat.Send.System:Single(
 				source,
 				string.format("%s Rep Level For %s To State ID %s", repLevel, args[2], args[1])
 			)
 		else
-			exports["pulsar-chat"]:SendSystemSingle(source, "Invalid Target")
+			plsr.Chat.Send.System:Single(source, "Invalid Target")
 		end
 	end, {
 		help = "Get Specified Reputation for Specified Player",
@@ -120,8 +120,8 @@ function RegisterCommands()
 		},
 	}, 2)
 
-	exports["pulsar-chat"]:RegisterAdminCommand("phoneperm", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterAdminCommand("phoneperm", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		local app, perm = args[2], args[3]
 
 		if char ~= nil then
@@ -130,21 +130,21 @@ function RegisterCommands()
 				if phonePermissions[app][perm] ~= nil then
 					if phonePermissions[app][perm] then
 						phonePermissions[app][perm] = false
-						exports["pulsar-chat"]:SendSystemSingle(source, "Disabled Permission")
+						plsr.Chat.Send.System:Single(source, "Disabled Permission")
 					else
 						phonePermissions[app][perm] = true
-						exports["pulsar-chat"]:SendSystemSingle(source, "Enabled Permission")
+						plsr.Chat.Send.System:Single(source, "Enabled Permission")
 					end
 
 					char:SetData("PhonePermissions", phonePermissions)
 				else
-					exports["pulsar-chat"]:SendSystemSingle(source, "Permission Doesn't Exist")
+					plsr.Chat.Send.System:Single(source, "Permission Doesn't Exist")
 				end
 			else
-				exports["pulsar-chat"]:SendSystemSingle(source, "App Doesn't Exist")
+				plsr.Chat.Send.System:Single(source, "App Doesn't Exist")
 			end
 		else
-			exports["pulsar-chat"]:SendSystemSingle(source, "Invalid Target")
+			plsr.Chat.Send.System:Single(source, "Invalid Target")
 		end
 	end, {
 		help = "Add Specified App Permission",
@@ -164,8 +164,8 @@ function RegisterCommands()
 		},
 	}, 3)
 
-	exports["pulsar-chat"]:RegisterAdminCommand("laptopperm", function(source, args, rawCommand)
-		local char = exports['pulsar-characters']:FetchBySID(tonumber(args[1]))
+	plsr.Chat:RegisterAdminCommand("laptopperm", function(source, args, rawCommand)
+		local char = plsr.Fetch:SID(tonumber(args[1]))
 		local app, perm = args[2], args[3]
 
 		if char ~= nil then
@@ -174,21 +174,21 @@ function RegisterCommands()
 				if laptopPermissions[app][perm] ~= nil then
 					if laptopPermissions[app][perm] then
 						laptopPermissions[app][perm] = false
-						exports["pulsar-chat"]:SendSystemSingle(source, "Disabled Permission")
+						plsr.Chat.Send.System:Single(source, "Disabled Permission")
 					else
 						laptopPermissions[app][perm] = true
-						exports["pulsar-chat"]:SendSystemSingle(source, "Enabled Permission")
+						plsr.Chat.Send.System:Single(source, "Enabled Permission")
 					end
 
 					char:SetData("LaptopPermissions", laptopPermissions)
 				else
-					exports["pulsar-chat"]:SendSystemSingle(source, "Permission Doesn't Exist")
+					plsr.Chat.Send.System:Single(source, "Permission Doesn't Exist")
 				end
 			else
-				exports["pulsar-chat"]:SendSystemSingle(source, "App Doesn't Exist")
+				plsr.Chat.Send.System:Single(source, "App Doesn't Exist")
 			end
 		else
-			exports["pulsar-chat"]:SendSystemSingle(source, "Invalid Target")
+			plsr.Chat.Send.System:Single(source, "Invalid Target")
 		end
 	end, {
 		help = "Add Specified App Permission",

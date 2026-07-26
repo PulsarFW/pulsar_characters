@@ -7,6 +7,8 @@ CreateThread(function()
 	})
 end)
 
+local config = load(LoadResourceFile(GetCurrentResourceName(), "config/shared.lua"))()
+
 local loadTo = 0
 function loadModel(model)
 	RequestModel(model)
@@ -17,19 +19,17 @@ function loadModel(model)
 	end
 end
 
-local previews = {
-	vector4(682.282, 584.414, 129.461, 205.768),
-	vector4(684.203, 585.349, 129.461, 194.392),
-	vector4(680.347, 582.919, 129.461, 239.809),
-	vector4(679.232, 585.493, 129.461, 236.240),
-	vector4(682.157, 587.705, 129.461, 199.840),
-}
+local preview = config.Scenes.select.preview
 local peds = {}
+
+function getPreviewSlot(k)
+	return preview["char" .. k]
+end
 
 RegisterNUICallback("GetData", function(data, cb)
 	cb("ok")
 
-	while LocalPlayer.state.ID == nil do
+	while plsr.State.flags.ID == nil do
 		Wait(1)
 	end
 
@@ -37,7 +37,7 @@ RegisterNUICallback("GetData", function(data, cb)
 		DeleteEntity(v)
 	end
 
-	exports["pulsar-core"]:ServerCallback("Characters:GetServerData", {}, function(serverData)
+	plsr.Callbacks:ServerCallback("Characters:GetServerData", {}, function(serverData)
 		SendNUIMessage({
 			type = "LOADING_SHOW",
 			data = { message = "Getting Character Data" },
@@ -45,9 +45,11 @@ RegisterNUICallback("GetData", function(data, cb)
 
 		FadeOutWithTimeout(500)
 
-		exports["pulsar-core"]:ServerCallback("Characters:GetCharacters", {}, function(characters)
+		plsr.Callbacks:ServerCallback("Characters:GetCharacters", {}, function(characters, characterLimit)
+			local sceneCoords = config.Scenes.select.pedCoords
+
 			local ped = PlayerPedId()
-			SetEntityCoords(ped, 685.865, 576.222, 132.841, 0.0, 0.0, 0.0, false)
+			SetEntityCoords(ped, sceneCoords.x, sceneCoords.y, sceneCoords.z, 0.0, 0.0, 0.0, false)
 			FreezeEntityPosition(ped, true)
 			SetEntityVisible(ped, false)
 			SetPlayerVisibleLocally(ped, false)
@@ -60,15 +62,16 @@ RegisterNUICallback("GetData", function(data, cb)
 
 			Wait(250)
 
+			local sceneCam = config.Scenes.select.camera
 			local cam2 = CreateCamWithParams(
 				"DEFAULT_SCRIPTED_CAMERA",
-				685.865,
-				576.222,
-				132.841,
-				338.730,
-				0.00,
-				0.00,
-				75.00,
+				sceneCam.coord.x,
+				sceneCam.coord.y,
+				sceneCam.coord.z,
+				sceneCam.pitch,
+				sceneCam.roll,
+				sceneCam.coord.w,
+				sceneCam.fov,
 				false,
 				0
 			)
@@ -79,16 +82,19 @@ RegisterNUICallback("GetData", function(data, cb)
 			cam = cam2
 
 			for k, v in ipairs(characters) do
-				if previews[k] then
+				local slot = getPreviewSlot(k)
+				if slot then
+					local coord = slot.coord
+
 					if v.Preview then
 						loadModel(GetHashKey(v.Preview.model))
 						local ped = CreatePed(
 							5,
 							GetHashKey(v.Preview.model),
-							previews[k][1],
-							previews[k][2],
-							previews[k][3],
-							previews[k][4],
+							coord[1],
+							coord[2],
+							coord[3],
+							coord[4],
 							false,
 							true
 						)
@@ -100,9 +106,10 @@ RegisterNUICallback("GetData", function(data, cb)
 						end
 
 						if DoesEntityExist(ped) then
-							SetEntityCoords(ped, previews[k][1], previews[k][2], previews[k][3], 0.0, 0.0, 0.0, false)
+							SetEntityCoords(ped, coord[1], coord[2], coord[3], 0.0, 0.0, 0.0, false)
 							FreezeEntityPosition(ped, true)
-							exports['pulsar-ped']:Preview(ped, tonumber(v.Gender), v.Preview, false, v.GangChain)
+							plsr.Ped:Preview(ped, tonumber(v.Gender), v.Preview, false, v.GangChain)
+							plsr.Animations.Ped:PlayEmote(ped, slot.anim, true)
 
 							table.insert(peds, ped)
 						end
@@ -111,10 +118,10 @@ RegisterNUICallback("GetData", function(data, cb)
 						local ped = CreatePed(
 							5,
 							tonumber(v.Gender) == 0 and `mp_m_freemode_01` or `mp_f_freemode_01`,
-							previews[k][1],
-							previews[k][2],
-							previews[k][3],
-							previews[k][4],
+							coord[1],
+							coord[2],
+							coord[3],
+							coord[4],
 							false,
 							true
 						)
@@ -126,8 +133,9 @@ RegisterNUICallback("GetData", function(data, cb)
 						end
 
 						if DoesEntityExist(ped) then
-							SetEntityCoords(ped, previews[k][1], previews[k][2], previews[k][3], 0.0, 0.0, 0.0, false)
+							SetEntityCoords(ped, coord[1], coord[2], coord[3], 0.0, 0.0, 0.0, false)
 							FreezeEntityPosition(ped, true)
+							plsr.Animations.Ped:PlayEmote(ped, slot.anim, true)
 
 							table.insert(peds, ped)
 						end
@@ -141,7 +149,7 @@ RegisterNUICallback("GetData", function(data, cb)
 					changelog = serverData.changelog,
 					motd = serverData.motd,
 					characters = characters,
-					characterLimit = 5,
+					characterLimit = characterLimit,
 				},
 			})
 			SendNUIMessage({ type = "LOADING_HIDE" })
@@ -157,7 +165,7 @@ end)
 
 RegisterNUICallback("CreateCharacter", function(data, cb)
 	cb("ok")
-	exports["pulsar-core"]:ServerCallback("Characters:CreateCharacter", data, function(character)
+	plsr.Callbacks:ServerCallback("Characters:CreateCharacter", data, function(character)
 		if character ~= nil then
 			SendNUIMessage({
 				type = "CREATE_CHARACTER",
@@ -175,7 +183,7 @@ end)
 
 RegisterNUICallback("DeleteCharacter", function(data, cb)
 	cb("ok")
-	exports["pulsar-core"]:ServerCallback("Characters:DeleteCharacter", data.id, function(status)
+	plsr.Callbacks:ServerCallback("Characters:DeleteCharacter", data.id, function(status)
 		if status then
 			SendNUIMessage({
 				type = "DELETE_CHARACTER",
@@ -188,7 +196,7 @@ end)
 
 RegisterNUICallback("SelectCharacter", function(data, cb)
 	cb("ok")
-	exports["pulsar-core"]:ServerCallback("Characters:GetSpawnPoints", data.id, function(spawns)
+	plsr.Callbacks:ServerCallback("Characters:GetSpawnPoints", data.id, function(spawns)
 		if spawns then
 			SendNUIMessage({
 				type = "SET_SPAWNS",
@@ -209,20 +217,16 @@ RegisterNUICallback("PlayCharacter", function(data, cb)
 
 	FadeOutWithTimeout(500)
 
-	exports["pulsar-core"]:ServerCallback("Characters:GetCharacterData", data.character.ID, function(cData)
+	plsr.Callbacks:ServerCallback("Characters:GetCharacterData", data.character.ID, function(cData)
 		cData.spawn = data.spawn
 		TriggerEvent("Characters:Client:SetData", -1, cData, function()
-			exports['pulsar-ped']:SpawnToWorld(cData, function()
-				LocalPlayer.state.canUsePhone = true
+			plsr.Spawn:SpawnToWorld(cData, function()
 				if data.spawn.event ~= nil then
-					exports["pulsar-core"]:ServerCallback(data.spawn.event, data.spawn, function()
-						LocalPlayer.state.Char = cData.ID
-						LocalPlayer.state:set('SID', cData.SID, true)
+					plsr.Callbacks:ServerCallback(data.spawn.event, data.spawn, function()
 						TriggerServerEvent("Characters:Server:Spawning")
 						FadeInWithTimeout(500)
 					end)
 				else
-					LocalPlayer.state:set('SID', cData.SID, true)
 					TriggerServerEvent("Characters:Server:Spawning")
 
 					FadeInWithTimeout(500)
@@ -242,5 +246,5 @@ RegisterNetEvent("Characters:Client:Spawned", function()
 	SetNuiFocus(false)
 	SendNUIMessage({ type = "APP_HIDE" })
 	SendNUIMessage({ type = "LOADING_HIDE" })
-	LocalPlayer.state.loggedIn = true
+	plsr.State.flags.loggedIn = true
 end)
