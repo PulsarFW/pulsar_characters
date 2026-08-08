@@ -241,10 +241,10 @@ RegisterNUICallback("PlayCharacter", function(data, cb)
 end)
 
 RegisterNetEvent("Characters:Client:Spawned", function()
+	plsr.State.flags.loggedIn = true
 	TriggerEvent("Characters:Client:Spawn")
 	TriggerServerEvent("Characters:Server:Spawn")
 	SetNuiFocus(false)
 	SendNUIMessage({ type = "APP_HIDE" })
 	SendNUIMessage({ type = "LOADING_HIDE" })
-	plsr.State.flags.loggedIn = true
 end)
